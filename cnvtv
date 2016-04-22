@@ -2,6 +2,9 @@
 
 shopt -s extglob
 
+start_time=`date +%s`
+
+
 # PARAMETERS  
 window_length=100;	# bin size
 no_of_procs=32;		# number of processes
@@ -83,6 +86,9 @@ Calc_and_Print(){
 	m=($2-$1)/(winLen); print $0,x1 }' > $output"_cnvtv.cnv" ;
 
 }
+printError(){
+	echo "$@" >&2;
+}
 #********************************************************************************#
 
 # DATA PREPARATION AND FILTERING 
@@ -96,6 +102,8 @@ mv $output"_temp2" $output"_temp1.bed";
 awk '{if($4!=0&&$5!=0&&$8>=0.5)print $4;}' $output"_temp1.bed" > $output"_cnvtv.input";
 awk '{if($4!=0&&$5!=0&&$8>=0.5)print $2,$3;}' $output"_temp1.bed" > $output"_cnvtv.bincor"; 
 rm -rf $output"_temp1.bed" $output"_temp1.bam";
+printError "Read Depth file generation...DONE"
+
 #******************************************************************************#
 
 # DIVIDE INTO CHUNKS 
@@ -131,6 +139,7 @@ for((i=0; i<stop1; i++ )); do
 	mv $output$tempString $output"_inp"$j
 done
 
+printError "Segmentation... Done"
 #***********************************************************************#
 # RUN THE SEGMENTATION ALGORITHM  USING MPIRUN
 mpirun -np $no_of_procs $SOURCEDIR/segment $output;
@@ -146,7 +155,6 @@ flag1=true
 for((i=0; i<stop1; i++));do
 	flag2=false;
 	flag2=$(tail -20 $output"_out"$i | awk -v ul=$upper_threshold -v ll=$lower_threshold -v a=$avg1 '{if($1>a*ul|| $1<a*ll){print "true"; exit }}END{print "false"}');
-	echo "f1:"$flag1 "f2:"$flag2
 	if [ "$flag1" = true -a "$flag2" = true ]; then
 		cat $output"_out"$i >> $output"_cnvtv.output"
 	elif [ "$flag1" = true -a "$flag2" = false ] ;then
@@ -171,6 +179,7 @@ rm -rf $output"_out"*
 
 
 #***************************************************************************#
+printError "Started Making CNV calls"
 # CODE TO MAKE CNV CALLS 
 		
 #rgument is the segmented binwise values with start and stop and the second argument is the ouput file ####
@@ -331,3 +340,6 @@ Calc_and_Print  $avg1 $N $window_length ${myarray[@]}
 
 rm -rf $output"_cnvtv_temp.cnv" $output"_cnvtv.call";
 
+printError "Successfully Completed...!"
+end_time=`date +%s`
+echo "Time taken: "$((end_time-start_time))"s"

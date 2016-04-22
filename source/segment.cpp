@@ -46,8 +46,8 @@ int main(int argc,char **argv)
 	MPI_Init(&argc,&argv);
 	MPI_Comm_rank(MPI_COMM_WORLD,&rank);
 	char intstr[100],outstr[100];
-	sprintf(intstr,"x%d",rank);
-	sprintf(outstr,"out%d",rank);
+	sprintf(intstr,"%s_inp%d",argv[1],rank);
+	sprintf(outstr,"%s_out%d",argv[1],rank);
 	ifstream inpfile;
 	ofstream outfile;
 	int n=1;
