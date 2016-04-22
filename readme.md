@@ -8,13 +8,17 @@ Make sure that these tools are added to your PATH variable
 
 # Installation
 Download the source code from https://github.com/vogetihrsh/pCNVD, extract the zip file
-`unzip pCNVD.zip`
-`cd pCNVD`
-`make install`
+```
+unzip pCNVD.zip
+cd pCNVD
+make install
+```
 
 
 # Usage
-`pCNVD/cnvtv -i <input BAM file> -o <output prefix> -m <mappability file> -z <bed file contaning windows>`
+```
+pCNVD/cnvtv -i <input BAM file> -o <output prefix> -m <mappability file> -z <bed file contaning windows>
+```
 
 ## Parameters 
 There are several paramters both optional and mandatory. The parameter values can be passed through command line as well as config file. 
