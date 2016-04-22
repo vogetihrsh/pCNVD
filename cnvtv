@@ -1,0 +1,333 @@
+#!/bin/bash
+
+shopt -s extglob
+
+# PARAMETERS  
+window_length=100;	# bin size
+no_of_procs=32;		# number of processes
+upper_threshold=1.45;	# upper threshold ratio
+lower_threshold=0.55;	# lower threshold ratio
+
+input_file="";	# required
+mappability_file=""; # required
+window_file=""; # required
+config_file="" # optional 
+
+output="";      # required
+SOURCEDIR=$(dirname $(readlink -f $0));
+
+cflag=0
+
+# ERROR SET PARAMETERS AND ERROR DETECTION 
+
+# SCANNING FOR PARAMETERS
+while getopts 'w:p:i:o:m:z:c:u:l:f:' flag; do
+	case "${flag}" in 
+	w) window_length="${OPTARG}"  ;;
+	p) no_of_procs="${OPTARG}" ;;
+	i) input_file="${OPTARG}" ;;
+	o) output="${OPTARG}"  ;;
+	m) mappability_file="${OPTARG}" ;;
+	z) window_file="${OPTARG}" ;;
+	c) config_file="${OPTARG}" cflag=1;;
+	u) upper_threshold="${OPTARG}" ;;
+	l) lower_threshold="${OPTARG}" ;;
+	f) merge_fraction="${OPTARG}" ;;
+	\?) echo "Invalid option: -$OPTARG" >& 2 exit ;;
+	esac 
+done
+
+# IF YOU USE -C CHECK IF CONFIG FILE EXISTS
+if [[ ! -f $config_file && $cflag -eq 1 ]]; then 
+	echo "Config File $config_file not found"
+	exit 
+
+elif [ $cflag -eq 1 ]; then 
+#PARSE INPUT FILE AND GET PARAMETERS
+	tr -d '\r' < $config_file > $output"config.temp"
+	while IFS='= ' read lhs rhs
+	do
+		if [[ ! $lhs =~ ^\ *'#' && -n $lhs ]]; then
+			rhs="${rhs%%\#*}"    # Del in line right comments
+			rhs="${rhs%%*( )}"   # Del trailing spaces
+			rhs="${rhs%\"*}"     # Del opening string quotes 
+			rhs="${rhs#\"*}"     # Del closing string quotes 
+			declare $lhs="$rhs"
+		fi
+	done < $output"config.temp"
+	rm -rf $output"config.temp"
+fi	
+
+# MINIMUM REQUIRED PARAMETERS
+if [[ -z "$input_file" || -z "$window_file" || -z "$mappability_file" || -z "$output" ]]; then
+	echo "Missing one of the required parameters: window_file (-z) mappability_file (-m) input_file (-i) output (-o) " >&2
+	exit 
+fi
+
+# FILE DOESNT EXIST ERROR
+if [[ ! -f $window_file || ! -f $input_file || ! -f $mappability_file ]]; then 
+	echo "One of the input files not found" >&2
+	exit
+fi
+#******************************************************************************#
+
+Calc_and_Print(){
+	avg=$1 && shift 
+		nWin=$1 && shift 
+		winLen=$1 && shift 
+		arr=($@)
+		echo "arr=as.integer(c(${arr[@]})); AVG=as.integer($avg); 
+		c=unlist(lapply(arr,function(x) ifelse(x<AVG,ppois(x,lambda=AVG),ppois(x,lambda=AVG,lower=FALSE) ) ));  
+	d=unlist(lapply(arr,function(x) dpois(x,lambda=AVG)));
+	for (i in 1:length(c)) cat(c[i],d[i],'\n')" |R --slave -q | paste $output"_cnvtv_temp.cnv" - | awk -v nWin="$nWin" -v OFS='\t' -v winLen="$winLen" '{x2=$NF;x1=$(NF-1);$NF="";$(NF-1)="";
+	m=($2-$1)/(winLen); print $0,x1 }' > $output"_cnvtv.cnv" ;
+
+}
+#********************************************************************************#
+
+# DATA PREPARATION AND FILTERING 
+samtools view -@ 4 -q 1 -bh $input_file > $output"_temp1.bam";
+/usr/bin/bedtools-2.17.0/bin/bedtools coverage -abam $output"_temp1.bam" -b $window_file > $output"_temp1.bed";
+rm -rf $output"_reads.bed";
+
+sort -n -k2 $output"_temp1.bed" -o $output"_temp1.bed";
+paste $output"_temp1.bed" $mappability_file > $output"_temp2";
+mv $output"_temp2" $output"_temp1.bed";
+awk '{if($4!=0&&$5!=0&&$8>=0.5)print $4;}' $output"_temp1.bed" > $output"_cnvtv.input";
+awk '{if($4!=0&&$5!=0&&$8>=0.5)print $2,$3;}' $output"_temp1.bed" > $output"_cnvtv.bincor"; 
+rm -rf $output"_temp1.bed" $output"_temp1.bam";
+#******************************************************************************#
+
+# DIVIDE INTO CHUNKS 
+rm -rf $output"_inp"*
+y=$(wc -l $output"_cnvtv.input" | awk '{print $1}')
+N=$y
+y=`expr $y / $no_of_procs`;
+split -l $y $output"_cnvtv.input" $output"_inp";
+p=`expr $no_of_procs - 1`
+q=`expr $p + 1`
+k=0
+FILE=$output"_inp"$q;
+tempString=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 8 | head -n 1)
+for i in $( ls $output"_inp"* )
+do
+	mv -f $i $output"_inp"$k
+((k++))
+	done
+	if [ -f $FILE ];
+	then
+		cat $FILE >> $output"_inp"$p
+		rm $output"_inp"$q
+	fi
+
+avg1=$( $SOURCEDIR"/calAvg" $N < $output"_cnvtv.input" | awk '{print $1}' );
+# this loop creates overlap between parts
+
+stop1=`expr $no_of_procs - 1`
+for((i=0; i<stop1; i++ )); do
+	j=`expr $i + 1`
+	tail -20 $output"_inp"$i > $output$tempString
+	cat $output"_inp"$j >> $output$tempString
+	mv $output$tempString $output"_inp"$j
+done
+
+#***********************************************************************#
+# RUN THE SEGMENTATION ALGORITHM  USING MPIRUN
+mpirun -np $no_of_procs $SOURCEDIR/segment $output;
+rm -rf $output"_inp"*;
+# MERGE THE ABOVE RESULTS
+#for ((n=0;n<$no_of_procs;n++))
+#do
+ #       cat $output"_out"$n >> $output"_cnvtv.output"
+  #      rm -rf $output"_out"$n
+#done
+rm -rf $output"_cnvtv.output"
+flag1=true
+for((i=0; i<stop1; i++));do
+	flag2=false;
+	flag2=$(tail -20 $output"_out"$i | awk -v ul=$upper_threshold -v ll=$lower_threshold -v a=$avg1 '{if($1>a*ul|| $1<a*ll){print "true"; exit }}END{print "false"}');
+	echo "f1:"$flag1 "f2:"$flag2
+	if [ "$flag1" = true -a "$flag2" = true ]; then
+		cat $output"_out"$i >> $output"_cnvtv.output"
+	elif [ "$flag1" = true -a "$flag2" = false ] ;then
+		head -n -20 $output"_out"$i >> $output"_cnvtv.output"
+	elif [ "$flag1" = false -a "$flag2" = true ] ;then
+		tail -n +21 $output"_out"$i >> $output"_cnvtv.output"
+	else
+		head -n -20 $output"_out"$i | tail -n +21 >> $output"_cnvtv.output";
+	fi
+
+	flag1=true;
+	if [ "$flag2" = true ]; then
+		flag1=false;
+	fi
+done
+if [ "$flag1" = false ]; then 
+	tail -n +21 $output"_out"$i >> $output"_cnvtv.output"
+else
+	cat $output"_out"$i >> $output"_cnvtv.output"
+fi
+rm -rf $output"_out"*
+
+
+#***************************************************************************#
+# CODE TO MAKE CNV CALLS 
+		
+#rgument is the segmented binwise values with start and stop and the second argument is the ouput file ####
+### input is a file containing start stop positions and the binwise corrected values ######
+##### bashscript first finds the average and then writes the output to the file  given as the second argument######
+
+paste $output"_cnvtv.bincor" $output"_cnvtv.output" > $output"_cnvtv.call";
+ll=$lower_threshold;
+uu=$upper_threshold;
+bedcnv="_cnvtv_temp.cnv";
+lower_cutoff=$(echo $ll $avg1 | awk '{print $1*$2}' )
+upper_cutoff=$(echo $uu $avg1 | awk '{print $1*$2}' )
+myarray=($(awk -v lc="$lower_cutoff" -v hc="$upper_cutoff" -v outfile="$output$bedcnv" -v avg="$avg1" '
+
+# temp function delete after done
+function isCopyNumberZero(cAvg,cCount)
+{
+	average = cAvg/cCount;
+	average = (average*2)/avg;
+	return int(average + 0.5);
+}
+
+#CONDITION IF TWO EVENTS SHOULD BE MERGED OR NOT 
+function shouldMerge(prevStart, prevEnd, curStart, curEnd)
+{
+	Ratio=(curStart-prevEnd-1)/(curEnd-prevStart+1);
+	if(Ratio<0.2)
+		return 1;
+	else 
+		return 0;
+}
+
+function absolute(n){
+	if(n<0)
+		return -n;
+	else
+		return n;
+}
+
+function checkzero(w1,w2,c1,c2){
+	if(c1<0.55 && c2<0.55 && (w2-w1)<10000)
+		return 1;
+	else
+		return 0;
+}
+
+BEGIN {
+	entryPointer=-1;
+	
+	prev=-1;
+	cnvType=-1;
+	curAvg=0;
+	count=0;
+	
+	prevRD=-1;
+	prevEndPoint=-1;
+	prevStart=-1;
+	
+	PTR=0;
+	diff=0;
+}
+
+{
+	diff=absolute(prevRD-$3);
+	if(entryPointer==1&&($3<=lc||$3>=hc)&&(diff<avg/2)&&prevEndPoint==$1)
+	{
+		curAvg=curAvg+$3;
+		count=count+1;
+	}
+
+	else if(entryPointer==1)
+	{
+		entryPointer=-1;
+		epoint=prevEndPoint;
+		curAvg=curAvg/count;
+
+		cn=(curAvg*2)/avg;
+		if(count>1){
+			PTR=PTR+1;
+			CNVARR[PTR,1]=spoint;CNVARR[PTR,2]=epoint;CNVARR[PTR,3]=cnvType;CNVARR[PTR,4]=cn;
+		}
+		cnvType=-1;
+		curAvg=0;
+		count=0;
+	}
+
+	if(entryPointer==-1 && ($3<=lc || $3>=hc) )
+	{
+		entryPointer=1;
+		spoint=$1;
+
+		if($3<=lc)
+			cnvType=0;
+		else
+			cnvType=1;
+		count = count +1;
+		curAvg = curAvg + $3;
+	}
+	prevEndPoint = $2;
+	prevStart=$1;
+	prevRD=$3;
+}
+
+END{
+	FLAG=0;
+	CSTART=-1;CSTOP=-1;CEVENT=-1;CCPOY=0;	#CURRENT START, STOP, TYPE OF EVENT AND COPY NUMBER 
+	MAX_WIN=0;	#MAX WINDOW length IN THE CNVS PREDICTED
+	i=1;
+	
+	#WHILE LOOP FOR MERGING CNVS AND WRITTING THE RESULTS TO OUTPUT FILE 
+	while(i<=PTR){
+		if(FLAG==0)
+		{
+			CSTART=CNVARR[i,1];
+			CSTOP=CNVARR[i,2];
+			CEVENT=CNVARR[i,3];
+			CCOPY=CNVARR[i,4];
+			FLAG=1;
+			i++;
+		}
+		else if(CEVENT==CNVARR[i,3]&& absolute(CCOPY-CNVARR[i,4])<0.5&& (shouldMerge(CSTART,CSTOP,CNVARR[i,1],CNVARR[i,2])==1||checkzero(CSTOP,CNVARR[i,1],CCOPY,CNVARR[i,4])==1)){
+			t1=(CSTOP-CSTART);
+			t2=CNVARR[i,2]-CNVARR[i,1];
+			CCOPY=(t1*CCOPY+t2*CNVARR[i,4])/(t1+t2);
+			CSTOP=CNVARR[i,2];
+			i++;
+		}
+		else{
+			printf ("%d\t%d\t%d\t%.2f\n",CSTART,CSTOP,CEVENT,CCOPY) >> outfile;
+			print (CCOPY*avg)/2,",";
+			FLAG=0;
+			
+			# CALCULATE MAXIMUM WINDOW LENGTH
+			temp=CSTOP-CSTART;
+			if(MAX_WIN<temp)
+				MAX_WIN=temp;
+		}
+	}
+
+	#PRINT THE LEFTOVER CNV, IF ANY
+	if(FLAG){
+			printf ("%d\t%d\t%d\t%.2f\n",CSTART,CSTOP,CEVENT,CCOPY) >> outfile;
+			print (CCOPY*avg)/2;
+			
+			# CALCULATE MAXIMUM WINDOW LENGTH
+			temp=CSTOP-CSTART;
+			if(MAX_WIN<temp)
+				MAX_WIN=temp;
+			printf("%d",MAX_WIN);	
+	}
+}
+'   $output"_cnvtv.call" ;))
+
+MAX_WIN=${myarray[${#myarray[@]}-1]};
+unset myarray[${#myarray[@]}-1];
+
+Calc_and_Print  $avg1 $N $window_length ${myarray[@]}
+
+rm -rf $output"_cnvtv_temp.cnv" $output"_cnvtv.call";
+
