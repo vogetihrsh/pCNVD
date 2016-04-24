@@ -93,7 +93,7 @@ printError(){
 
 # DATA PREPARATION AND FILTERING 
 samtools view -@ 4 -q 1 -bh $input_file > $output"_temp1.bam";
-/usr/bin/bedtools-2.17.0/bin/bedtools coverage -abam $output"_temp1.bam" -b $window_file > $output"_temp1.bed";
+bedtools coverage -abam $output"_temp1.bam" -b $window_file > $output"_temp1.bed";
 rm -rf $output"_reads.bed";
 
 sort -n -k2 $output"_temp1.bed" -o $output"_temp1.bed";
