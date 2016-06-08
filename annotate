@@ -1,0 +1,26 @@
+#!/bin/bash
+# first argument - CNV output File (.cnv)
+# second argument - genome build (e.g. hg18 and hg19)
+
+annotationDir="annotations/"
+function annotate {
+	cnvFile=$1
+	genome=$2
+	annotationFile=$annotationDir$genome".bed"
+	bedtools intersect -sorted -wao -a $cnvFile -b $annotationFile  | awk -v OFS='\t' '
+	{
+		if($11!=0)
+		{
+			f1 = $11/($3-$2);
+			f2 = $11/($8-$7);
+	
+			if (f1 > 0.5 || f2 > 0.5)
+				print $1,$2,$3,$5,$9,$10,$11/($3-$2),$11/($8-$7);
+		}
+	}'
+
+}
+
+annotate $1 $2
+
+
